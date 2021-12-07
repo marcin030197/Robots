@@ -1,0 +1,1873 @@
+MODULE Module1
+    CONST robtarget pPick10:=[[-1295.53,-1572.36,717.37],[0.0053839,0.999911,0.00494327,-0.0111968],[-2,-1,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pFirstBend10:=[[2237.03,1051.90,1088.60],[0.0139907,0.000761093,0.999902,0.000609381],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pFirstBend20:=[[2239.29,1052.07,1004.59],[0.0139619,0.000709638,0.999902,0.000567135],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pFirstBend30:=[[2238.63,1052.06,1035.66],[0.00644418,0.000692891,0.999979,0.00054162],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pFirstBend40:=[[2238.95,1052.35,995.49],[0.00655843,0.000544168,0.999978,0.000558949],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pFirstBend50:=[[1727.57,1058.99,988.45],[0.00105862,0.000756076,0.999999,0.000626082],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    PROC main()
+        VAR bool b_loop;
+        
+        datareset;
+        pCurpos:=CRobT(\Tool:=Gripper\Wobj:=wobj0);
+        joints := CalcJointT(pCurPos, Gripper \WObj:=wobj0);
+        MoveAbsJ joints, v100, fine, Gripper;
+        rWorldZOnes;
+        init;
+        homing;
+        
+        ! czekaj az rob2 bedzie w pozycji home, jest to potrzebne do synchronizacja pracy robotów - musza zaczynac prace od pozycji home.
+        waitdo do_WZAtHome_2,1;
+        waittime 1;
+        
+        ! mozliwosc wykonania tylko homingu
+        IF di_OnlyHoming=1 THEN
+            stop;
+        ENDIF
+        ! mozliwosc wlaczenia tylko 1 robota do pracy, 
+        IF di_OnlyRob2On=1 THEN
+            homing;
+            stop;
+        ENDIF
+        ! mozliwosc odlozenie detalu na stól pozycjunujacy
+        IF di_PutDetailOnPositiongTable_1=1 THEN
+            placedetail1;
+            MoveAbsJ jHome, v1000, fine, Gripper\WObj:=wobj0; 
+            WaitRob\InPos;
+            stop;
+        ELSE
+            errorCheck 1;
+        ENDIF
+        
+        b_loop:=TRUE;
+        WHILE b_loop=TRUE DO
+            PrepareErmaksan;
+            
+            ! dluzszy produkt
+            IF di_Produkt1=1 THEN
+                Pick;
+                bendingnew;
+                Place;
+                ! Zakoncz obserwacje worldzone place area rob2
+                ISleep intSync;
+                ! Zresetuj  do_Sync1  aby rob2 wiedzial ze rob1 nie jest juz w strefie place
+                setdo do_Sync1,0;
+            ENDIF
+            ! krótszy produkt
+            IF di_Produkt2=1 THEN
+                Pick2;
+                bendingnew2;
+                Place2;
+                ! Zakoncz obserwacje worldzone place area rob2
+                ISleep intSync;
+                ! Zresetuj  do_Sync1  aby rob2 wiedzial ze rob1 nie jest juz w strefie place
+                setdo do_Sync1,0;
+            ENDIF
+            IF di_Produkt1=0 AND di_Produkt2=0 THEN
+                stop;
+                !error, nie zostal wybrany produkt z panelu HMI
+            ENDIF
+        
+            MoveAbsJ jHome, v1000, fine, Gripper\WObj:=wobj0; 
+            WaitRob\InPos;
+            PulseDO\PLength:=0.75,do_PleaseMovePalletTo2Area;
+            waittime 0.75;
+            IF di_PleaseOpenDoors=1 THEN
+                stop;
+            ENDIF
+                
+            ! jezeli zostal wystawiony sygnal di_LAstDetail lub do_Lastdetail to zakoncz petle
+            IF di_LastDetail=1 OR do_LastDetail=1 THEN
+                b_loop:=FALSE;
+            ENDIF
+        ENDWHILE 
+        stop; 
+        
+    ENDPROC
+    
+    PROC init()
+        !errorCheck 4;
+        errorcheck 6;
+        !TrapsMaintain FALSE,0;
+        !TrapsMaintain TRUE,2;
+        !TrapsMaintain TRUE,3;
+        !TrapsMaintain TRUE,4;
+        !TrapsMaintain TRUE,5;
+        GrippersInPressBrake FALSE;
+        
+        Setdo do_StartErmaksan_1,0;
+        errorCheck 3;   
+    ENDPROC
+    
+
+      PROC datareset()
+        Setdo do_Sync1,0;
+        Setdo do_Sync2,0;
+        ! Lastdetail - zrób ten detal i zakoncz prace
+        Setdo do_LastDetail,0;
+        Setdo do_RobotFinished_1,0;
+        Setdo do_InHomingProcess_1,0;
+        Setgo go_Function_1,0;
+    ENDPROC
+    
+    PROC homing()
+        VAR bool b_loop;
+        !bezpieczny homing wykorzystujac WorldZones
+        
+        AccSet 10,10\FinePointRamp:=15;
+        
+        
+        ! Informacja dla PLC ze rob1 jest w trakcie hopmingu
+        Setdo do_InHomingProcess_1,1;
+        Setgo go_Function_1,1;
+        
+    
+        
+         ! Jezeli robot jest blisko pozycji home jedzie prosto do punktu jHome
+        IF(do_WZAtHome_1=1) THEN
+           MoveAbsJ jHome,v100,z100,Gripper\WObj:=wobj0;
+        
+         ! Jezeli robot jest w pick area 
+         ! sprawdzana jest wysokosc na jakiej jest chwytak, jezeli jest za nisko to na poczatku chwytak jedzie w góre
+        ELSEIF(do_WZPickArea_1=1 AND do_WZAtHome_1=0) THEN
+            pCurpos:=CRobT(\Tool:=Gripper\Wobj:=wobj0);
+            IF pCurpos.trans.z<800 THEN
+                GripperOperating FALSE,4;
+                MoveL offs(pCurpos,0,0,200),v50,z100,Gripper\WObj:=wobj0;
+            ENDIF
+            MoveAbsJ jWP1, v100, z100, Gripper\WObj:=wobj0;
+        
+        !Jezeli robot jest przed prasa krawedziowa w celu bezpeicznego homingu na poczatku powinien pojechac do punktu pInFrontOfPressBrake
+        ! sprawdzana jest tez wysokosc jak w pick area
+        ELSEIF(do_WZInFrontOfPressBrake_1=1) THEN
+            pCurpos:=CRobT(\Tool:=Gripper\Wobj:=wobj0);
+            
+             IF pCurpos.trans.y>500 THEN
+                IF pCurpos.trans.z<1050 THEN
+                    GripperOperating FALSE,4;
+                    MoveL Offs(pCurpos,0,0,50),v20,fine,Gripper\WObj:=wobj0;
+                ENDIF
+                    MoveL [[373.75,349.55,68.34],[0.0013052,0.999962,-0.000567679,-0.00855354],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper\WObj:=Ermaksan1;
+                    MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v100, fine, Gripper;
+                    MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v100, fine, Gripper;
+                    MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v100, fine, Gripper;
+                    MoveAbsJ jWP2,v100,z100,Gripper\WObj:=wobj0;
+                    waitrob\inpos;
+            ENDIF
+            
+             IF pCurpos.trans.y<500  AND pCurpos.trans.y>0 THEN
+                MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v100, fine, Gripper;
+                MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v100, fine, Gripper;
+                MoveAbsJ jWP2,v100,z100,Gripper\WObj:=wobj0;
+                waitrob\inpos;
+            ENDIF
+            
+            IF pCurpos.trans.y>-240 AND pCurpos.trans.y<0  THEN
+                MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v100, fine, Gripper;
+                MoveAbsJ jWP2,v100,z100,Gripper\WObj:=wobj0;
+                waitrob\inpos;
+            ENDIF
+            
+        
+         ! Jezeli robot jest w place area na poczatku jedzie do punktu pWP4
+        ELSEIF(do_WZPlaceArea_1=1 AND do_WZAtHome_1=0) THEN
+            pCurpos:=CRobT(\Tool:=Gripper\Wobj:=wobj0);
+            IF pCurpos.trans.z<900 THEN
+                GripperOperating FALSE,4;
+                MoveL offs(pCurpos,0,0,100),v50,z100,Gripper\WObj:=wobj0;
+            ENDIF
+            MoveAbsJ jWP4, v100, z100, Gripper\WObj:=wobj0;
+            
+        ELSEIF(do_WZInPressBrake_1=1) THEN
+            GrippersInPressBrake FALSE;
+            GripperOperating FALSE,4;
+            b_loop:=TRUE;
+            WHILE  b_loop=TRUE DO
+                IF  di_ErmaksanTDP_1=1 AND di_ErmaksanReady_1=0 THEN
+                    b_loop:=FALSE;
+                ENDIF
+            ENDWHILE
+            pCurpos:=CRobT(\Tool:=Gripper\Wobj:=Ermaksan1);
+            MoveL pCurpos,v100,fine,Gripper\WObj:=Ermaksan1;
+            IF pCurpos.trans.z<0 THEN
+                MoveL Offs(pCurpos,0,0,20),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>50 AND pCurpos.trans.z<70 THEN
+                MoveL Offs(pCurpos,0,0,-30),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>70 AND pCurpos.trans.z<90 THEN
+                MoveL Offs(pCurpos,0,0,-50),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>90 AND pCurpos.trans.z<110 THEN
+                MoveL Offs(pCurpos,0,0,-70),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>110 AND pCurpos.trans.z<130 THEN
+                MoveL Offs(pCurpos,0,0,-90),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>130 AND pCurpos.trans.z<150 THEN
+                MoveL Offs(pCurpos,0,0,-110),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>150 AND pCurpos.trans.z<170 THEN
+                MoveL Offs(pCurpos,0,0,-130),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>170 AND pCurpos.trans.z<190 THEN
+                MoveL Offs(pCurpos,0,0,-150),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>190 AND pCurpos.trans.z<220 THEN
+                MoveL Offs(pCurpos,0,0,-170),v20,fine,Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSEIF pCurpos.trans.z>0 AND pCurpos.trans.z<50 THEN
+                MoveL [[373.75,349.56,40.06],[0.00126601,0.999963,-0.000564374,-0.00854118],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper\WObj:=Ermaksan1;
+                waitrob\inpos;
+            ELSE
+                stop;
+                ! error;
+            ENDIF
+            MoveL [[373.75,349.56,40.06],[0.00126601,0.999963,-0.000564374,-0.00854118],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper\WObj:=Ermaksan1;
+            waitrob\inpos;
+            MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v100, fine, Gripper;
+            MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v100, fine, Gripper;
+            MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v100, fine, Gripper;
+        
+            MoveAbsJ jWP2,v100,z100,Gripper\WObj:=wobj0;
+            waitrob\inpos;
+            IF di_PleaseOpenDoors=1 THEN
+                stop;
+            ENDIF
+            
+         ! brak mozliwosci homingu w trybie auto   
+        ELSE
+            Setdo do_Error2,1;
+            stop;
+        ENDIF
+        
+        
+        MoveAbsJ jHome,v100,z100,Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        Setdo do_InHomingProcess_1,0;
+        Setgo go_Function_1,0;
+    ENDPROC
+    
+     PROC Pick()
+        VAR bool btimout1;
+        VAR bool b_loop;
+        VAR clock timer;
+        VAR num time;
+        !Bezpeiczna procedura pobierania detalu wykorzystujac sygnaly do_Sync 1,2 i WorldZones
+        
+        AccSet 70,20\FinePointRamp:=15;
+        
+        Setgo go_Function_1,3;
+        waitdi di_PositioningTableReady,1;
+        Setgo go_Function_1,0;
+        
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync2, do_Sync2=1 gdy rob2 jest w strefie pick lub place
+        WaitDO do_Sync2,0;
+        ! wystaw na do_Sync1 1 aby rob 2 wiedzial ze rob1 jest w strefie pick
+        Setdo do_Sync1,1;
+        !obserwuj worldzone rob2 czy nie jest w strefie pick area
+        errorcheck 6;    
+        ! przygotowanie intSync - obserwowanie sygnalu do_WZPickArea_2, ( do_WZPickArea_2=1 gdy rob 2 jest w strefie pobierania detalu ze stolu)
+        Idelete intSync;
+        CONNECT intSync WITH tSync;
+        ISignalDO\Single,do_WZPickArea_2,high,intSync;
+        IWatch intSync;
+        
+        Setgo go_Function_1,3;
+        waitdi di_PositioningTableReady,1;
+        Setgo go_Function_1,0;
+        
+        Setgo go_Function_1,4;
+        MoveAbsJ jWP1, v1000, z100, Gripper\WObj:=wobj0;
+        WaitRob\inpos;
+        MoveL Reltool(pPick,0,0,-200), v800, z100, Gripper\WObj:=wobj0;
+        AccSet 50,20\FinePointRamp:=15;
+        MoveL pPick, v300, fine, Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        ! pobór detalu ze stolu pozycjunujacego
+        GripperOperating TRUE,4;
+        waittime 1;
+        Setgo go_Function_1,5;
+        !zmniejszenie przyspieszneia
+        AccSet 20,20\FinePointRamp:=15;
+        MoveL pPick10, v100, fine, Gripper;
+        AccSet 50,20\FinePointRamp:=15;
+        MoveL Reltool(pPick,0,0,-200), v500, fine, Gripper\WObj:=wobj0;
+        !zwiekszenie przyspieszneia
+		MoveL pWp1, v500, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zakoncz obserwacje worldzone pick area rob2
+        ISleep intSync;
+        MoveAbsJ jWP2, v500, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zresetuj  do_Sync1  aby rob2 wiedzial ze rob1 nie jest juz w strefie pobierania detalu
+        setdo  do_Sync1,0;
+        
+        PulseDO\PLength:=0.75,do_detailpicked_1;
+        waittime 0.75;
+        
+    ENDPROC
+    
+    PROC placedetail1()
+        !Bezpeiczna procedura pobierania detalu wykorzystujac sygnaly do_Sync 1,2 i WorldZones
+        
+        AccSet 50,20\FinePointRamp:=15;
+        
+        waittime 0.5;
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync2, do_Sync2=1 gdy rob2 jest w strefie pobierania detalu
+        WaitDO do_Sync2,0;
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync4, do_Sync4=1 gdy rob2 jest w strefie place, ukladania detalu na transporterze
+        WaitDO do_Sync4,0;
+        ! wystaw na do_Sync1 1 aby rob 2 wiedzial ze rob1 jest w strefie pick
+        Set do_Sync1;
+        !obserwuj worldzone rob2 czy nie jest w strefie pick area
+        errorcheck 6;    
+        ! przygotowanie intSync - obserwowanie sygnalu do_WZPickArea_2, ( do_WZPickArea_2=1 gdy rob 2 jest w strefie pobierania detalu ze stolu)
+        Idelete intSync;
+        CONNECT intSync WITH tSync;
+        ISignalDO\Single,do_WZPickArea_2,high,intSync;
+        IWatch intSync;
+        
+        
+        
+        MoveAbsJ jWP1, v500, z100, Gripper\WObj:=wobj0;
+        WaitRob\inpos;
+        MoveL Reltool(pPick,0,0,-200), v500, z100, Gripper\WObj:=wobj0;
+        MoveL pPick30, v300, fine, Gripper;
+        waitrob\inpos;
+        ! pobór detalu ze stolu pozycjunujacego
+        GripperOperating FALSE,4;
+        waittime 1;
+        !zmniejszenie przyspieszneia
+        MoveL Reltool(pPick,0,0,-200), v500, fine, Gripper\WObj:=wobj0;
+        !zwiekszenie przyspieszneia
+		MoveL pWp1, v500, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zakoncz obserwacje worldzone pick area rob2
+        ISleep intSync;
+        MoveAbsJ jWP2, v500, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zresetuj  do_Sync1  aby rob2 wiedzial ze rob1 nie jest juz w strefie pobierania detalu
+        Reset do_Sync1;
+        
+    ENDPROC
+    
+    PROC Pick2()
+        VAR bool btimout1;
+        VAR bool b_loop;
+        !Bezpeiczna procedura pobierania detalu wykorzystujac sygnaly do_Sync 1,2 i WorldZones
+        
+        AccSet 70,20\FinePointRamp:=15;
+        
+        Setgo go_Function_1,3;
+        waitdi di_PositioningTableReady,1;
+        Setgo go_Function_1,0;
+        
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync2, do_Sync2=1 gdy rob2 jest w strefie pick lub place
+        WaitDO do_Sync2,0;
+        ! wystaw na do_Sync1 1 aby rob 2 wiedzial ze rob1 jest w strefie pick
+        Setdo do_Sync1,1;
+        !obserwuj worldzone rob2 czy nie jest w strefie pick area
+        errorcheck 6;    
+        ! przygotowanie intSync - obserwowanie sygnalu do_WZPickArea_2, ( do_WZPickArea_2=1 gdy rob 2 jest w strefie pobierania detalu ze stolu)
+        Idelete intSync;
+        CONNECT intSync WITH tSync;
+        ISignalDO\Single,do_WZPickArea_2,high,intSync;
+        IWatch intSync;
+        
+        waitdi di_PositioningTableReady,1;
+        
+        MoveAbsJ jWP1, v1000, z100, Gripper\WObj:=wobj0;
+        WaitRob\inpos;
+        MoveL Reltool(pPick2,0,0,-200), v800, z100, Gripper\WObj:=wobj0;
+        MoveL pPick2, v300, fine, Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        ! pobór detalu ze stolu pozycjunujacego
+        GripperOperating TRUE,4;
+        Setgo go_Function_1,5;
+        waittime 1;
+        AccSet 20,20\FinePointRamp:=15;
+        MoveL pPick20, v100, fine, Gripper;
+        AccSet 50,20\FinePointRamp:=15;
+        MoveL Reltool(pPick20,0,0,-200), v500, fine, Gripper\WObj:=wobj0;
+        !zwiekszenie przyspieszneia
+		MoveL pWp1,v500,z100,Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zakoncz obserwacje worldzone pick area rob2
+        ISleep intSync;
+        MoveAbsJ jWP2, v500, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        ! Zresetuj  do_Sync1  aby rob2 wiedzial ze rob1 nie jest juz w strefie pobierania detalu
+        setdo do_Sync1,0;
+        
+        PulseDO\PLength:=0.75,do_detailpicked_1;
+        WaitTime 0.75;
+        
+    ENDPROC
+    
+
+    
+    PROC bendingnew()
+        VAR robtarget pTemp;
+        
+        AccSet 50,20\FinePointRamp:=15;
+        !MoveAbsJ jWP3, v500, z100, Gripper\WObj:=wobj0;
+        !MoveAbsJ jWP13\NoEOffs, v500, z100, Gripper;
+        !MoveAbsJ jInFrontOfPressBrake, v500, z100, Gripper\WObj:=wobj0;
+        !waitrob\inpos;
+        
+        GrippersInPressBrake FALSE;
+        
+        Setgo go_Function_1,9;
+        MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v800, fine, Gripper;
+         MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v500, fine, Gripper;
+         MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v500, fine, Gripper;
+         MoveL [[373.75,349.55,68.34],[0.0013052,0.999962,-0.000567679,-0.00855354],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+         
+         ! sprawdzenie polozenia narzedzi w prasie nr 1
+         MoveL [[375.14,381.02,134.29],[0.00138225,0.999964,-0.00060615,-0.00836838],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+         waitrob\inpos;
+         IF gi_KeyenceDistance_1 < 45000 THEN
+             Setdo do_Warning1,1;
+             Setdo do_LastDetail,1;
+             stop;
+         ENDIF
+         MoveL [[375.23,429.75,133.90],[0.00133424,0.999964,-0.0006084,-0.00835498],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper\WObj:=Ermaksan1;
+         waitrob\inpos;
+         IF gi_KeyenceDistance_1>45000 THEN
+             Setdo do_Warning1,1;
+             Setdo do_LastDetail,1;
+             stop;
+         ENDIF
+         
+        AccSet 20,20\FinePointRamp:=15;
+        MoveL [[72.92,338.09,68.10],[0.000100398,-0.999998,0.00203022,-2.31594E-06],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[71.47,338.10,-49.16],[7.01672E-05,-0.999998,0.00203318,-4.14188E-06],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersinPressBrake TRUE;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[67.02,337.85,-28.09],[0.000132243,0.999998,-0.00197469,-0.000123554],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        Setgo go_Function_1,10;
+        !1 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.42,344.38,-55.32],[0.00206165,0.999974,-0.00199998,-0.00656663],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-122.39,344.31,-30],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.31,0],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.72,343.10,2.33],[5.37603E-05,-0.999997,0.0025161,4.14224E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.39,346.88,-52.65],[0.000104949,-0.999997,0.0025252,1.19208E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !2 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.41,344.23,-56.42],[0.00208504,0.999974,-0.00193636,-0.00661486],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-122.39,344.31,-36],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.31,0],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.72,343.10,2.33],[5.37603E-05,-0.999997,0.0025161,4.14224E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.39,343.17,-52.75],[0.00015297,-0.999997,0.00251639,4.46565E-06],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !3 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.18,-54.35],[0.00200406,0.999972,-0.00190168,-0.00692869],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-122.37,344.19,-34],[0.00199649,0.999972,-0.00189728,-0.00691837],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.37,344.19,22.00],[0.00199649,0.999972,-0.00189728,-0.00691837],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.71,343.09,25.39],[5.09089E-05,-0.999997,0.00251344,3.84878E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.37,343.13,-53.23],[0.001959,0.999997,-0.00158682,1.339E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !4 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.18,-54.35],[0.00200406,0.999972,-0.00190168,-0.00692869],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-122.37,344.19,-30],[0.00199498,0.999972,-0.00189794,-0.00692587],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.37,344.21,82.79],[0.0019845,0.999972,-0.0019007,-0.0069166],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.70,343.14,93.24],[5.87621E-05,-0.999997,0.00254053,-1.15762E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.37,343.07,-52.59],[9.6204E-05,-0.999998,0.00198251,3.76559E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !5giecie
+        sekwencja;
+        
+        MoveL [[-177.35,343.08,0],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.07,343.02,0],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.06,342.94,-58.24],[0.00106045,0.999985,-0.00241137,-0.00484085],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-321.07,343.02,-30],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.07,343.02,0],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-376.47,344.03,-0.07],[0.00103271,0.999955,-0.00213058,-0.00915027],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-376.47,342.08,-45.37],[0.00117549,0.999951,-0.00310933,-0.00927126],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-376.46,348.84,-23.93],[0.00106057,0.999955,-0.00215265,-0.00915117],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\InPos;
+        
+        !6 giecie
+        sekwencja;
+        MoveL [[-322.37,343.06,0],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-322.37,343.06,-45.85],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+    
+        MoveL [[-322.37,343.06,-30],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-322.37,343.06,0],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.41,343.25,0],[0.000924113,0.999921,-0.00214071,-0.0123632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.38,347.74,-42.77],[0.000877977,0.999922,-0.00155807,-0.0123242],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-377.40,349.93,-23.66],[0.000915529,0.999921,-0.0021397,-0.0123518],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !7 giecie
+        sekwencja;
+        MoveL [[-377.38,343.25,-47.91],[0.000974734,0.99992,-0.00212077,-0.012424],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! Gripper TRUE
+        GripperOperating TRUE,4;
+
+        
+        GrippersInPressBrake FALSE;
+        
+        
+        MoveL [[-377.38,343.25,-30],[0.000974734,0.99992,-0.00212077,-0.012424],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.38,343.24,0],[0.000971532,0.99992,-0.00212395,-0.0124079],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-432.78,343.30,0],[0.00098831,0.999922,-0.000906058,-0.0124342],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-432.76,343.29,-47.77],[0.000961011,0.99992,-0.00201097,-0.012418],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-432.84,351.23,-27.55],[0.00101282,0.999921,-0.000915606,-0.0124657],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! 8 giecie
+        sekwencja;
+        MoveL [[-371.81,343.14,-27.69],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.81,343.14,-48.81],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-371.78,343.14,-30],[0.00108696,0.99994,-0.000855093,-0.0108998],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.78,343.14,39.93],[0.00108696,0.99994,-0.000855093,-0.0108998],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,40],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,345.91,-46.63],[0.00175504,0.999939,-0.00141378,-0.0107969],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! GRipper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-426.79,348.05,-28.08],[0.00110036,0.999939,-0.000813449,-0.0109244],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !9 giecie
+        sekwencja;
+        
+        MoveL [[-371.81,343.14,-27.69],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.81,343.14,-48.81],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+
+        MoveL [[-371.82,343.17,-30],[0.00109315,0.99994,-0.000866334,-0.0109058],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.82,343.17,69.37],[0.00109315,0.99994,-0.000866334,-0.0109058],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,60],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,-48.13],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        ! GRipper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-426.80,343.09,-28.13],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! 10 giecie
+        sekwencja;
+        MoveL [[-521.29,349.66,-31.31],[0.00117901,0.999939,-0.000851856,-0.0109072],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-521.30,349.67,-46.79],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-521.30,349.67,-30],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-521.30,349.67,0],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-576.30,349.72,0],[0.00117788,0.999939,-0.000812051,-0.0109206],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-576.30,349.82,-44.76],[0.00114477,0.99994,-0.000825227,-0.0109086],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        !GRpper False
+        GripperOperating FALSE,4;
+
+        
+        MoveL [[-576.76,349.72,-23.84],[0.00117788,0.999939,-0.000812051,-0.0109206],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !11 giecie
+        sekwencja;
+        MoveL [[-572.77,349.63,-48.07],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-572.77,349.63,-30],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-572.77,349.63,0],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-627.77,349.58,0],[0.00113329,0.999939,-0.000760766,-0.0109875],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-627.77,351.61,-42.87],[0.00113734,0.999938,-0.000743341,-0.0110131],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        !Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-627.06,349.58,-24.88],[0.00113329,0.999939,-0.000760766,-0.0109875],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !12 giecie
+        sekwencja;
+        MoveL [[-570.80,349.52,-27.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,-47.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! gripper TRUE
+        GripperOperating TRUE,4;
+    
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-570.80,349.52,-30],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,50],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.81,349.70,50],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.81,349.56,-43.54],[0.00118136,0.999938,-0.000643859,-0.0110609],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        !gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-625.83,357.45,-25.15],[0.00115741,0.999938,-0.000657469,-0.0110278],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !13giecie
+        sekwencja;
+        
+        MoveL [[-570.80,349.52,-27.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,-47.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-570.79,349.55,-30],[0.00116093,0.999938,-0.000738404,-0.0110579],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.79,349.55,97.57],[0.00116093,0.999938,-0.000738404,-0.0110579],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.79,349.70,97.57],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.79,349.74,-42.59],[0.00116303,0.999938,-0.000642829,-0.0110226],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        !gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-625.81,349.70,-25.03],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !14 giecie
+        sekwencja;
+        MoveL [[-570.80,349.52,-27.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,-47.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        MoveL [[-570.79,349.55,-30],[0.00116093,0.999938,-0.000738404,-0.0110579],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.79,349.55,127.57],[0.00116093,0.999938,-0.000738404,-0.0110579],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.79,349.70,127.57],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-625.79,349.69,-42.25],[0.00123376,0.999938,-0.00064656,-0.0110881],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        
+        !gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-625.81,349.70,-25.03],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! 15 giecie
+        sekwencja;
+        MoveL [[-625.81,349.70,0],[0.00118588,0.999938,-0.000638341,-0.0110633],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-719.55,349.66,0],[0.00126542,0.999962,-0.000585584,-0.00862326],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-719.55,349.66,-45.62],[0.00126542,0.999962,-0.000585584,-0.00862326],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+         ! gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        
+        Setgo go_Function_1,0;
+        
+        MoveL [[-719.55,349.66,-30],[0.00126542,0.999962,-0.000585584,-0.00862326],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-719.54,349.62,68.36],[0.00126381,0.999962,-0.000579303,-0.008598],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        MoveL [[373.75,349.55,68.34],[0.0013052,0.999962,-0.000567679,-0.00855354],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+        
+        Setgo go_Function_1,11; 
+        MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v500, fine, Gripper;
+        
+        AccSet 50,20\FinePointRamp:=15;
+        MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jWP2, v800, z100, Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        Setgo go_Function_1,0;
+        
+    ENDPROC
+    
+    PROC bendingnew2()
+        
+        AccSet 50,20\FinePointRamp:=15;
+        
+        GrippersInPressBrake FALSE;
+        
+        !MoveAbsJ jWP3, v500, z100, Gripper\WObj:=wobj0;
+        !MoveAbsJ jWP13\NoEOffs, v500, z100, Gripper;
+        !MoveAbsJ jInFrontOfPressBrake, v500, z100, Gripper\WObj:=wobj0;
+        !waitrob\inpos;
+        
+        Setgo go_Function_1,9;
+        MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v800, fine, Gripper;
+        MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jInFrontOfPressBrake40\NoEOffs, v300, fine, Gripper\WObj:=Ermaksan1;
+        
+        ! sprawdzenie polozenia narzedzi w prasie nr 1
+         MoveL [[375.14,381.02,134.29],[0.00138225,0.999964,-0.00060615,-0.00836838],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+         waitrob\inpos;
+         IF gi_KeyenceDistance_1 < 45000 THEN
+             Setdo do_Warning1,1;
+             Setdo do_LastDetail,1;
+             stop;
+         ENDIF
+         MoveL [[375.23,429.75,133.90],[0.00133424,0.999964,-0.0006084,-0.00835498],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper\WObj:=Ermaksan1;
+         waitrob\inpos;
+         IF gi_KeyenceDistance_1>45000 THEN
+             Setdo do_Warning1,1;
+             Setdo do_LastDetail,1;
+             stop;
+         ENDIF
+        
+        AccSet 20,20\FinePointRamp:=15;
+        MoveL [[22.55,338.22,69.49],[0.00010704,-0.999994,0.003574,-2.84962E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[22.54,338.22,-53.87],[0.000127238,-0.999994,0.00357239,-2.6703E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[13.01,338.18,-30],[0.000110983,-0.999994,0.00356372,-1.63426E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        Setgo go_Function_1,10;
+        !1 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.42,344.38,-55.32],[0.00206165,0.999974,-0.00199998,-0.00656663],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-122.39,344.31,-30],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.31,0],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.72,343.10,2.33],[5.37603E-05,-0.999997,0.0025161,4.14224E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-178.26,345.43,-55.52],[0.000727945,0.999999,-0.000956549,-8.51978E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !2 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.41,344.23,-56.42],[0.00208504,0.999974,-0.00193636,-0.00661486],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-122.39,344.31,-30],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.31,0],[0.00203737,0.999975,-0.00198099,-0.00654196],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.72,343.10,2.33],[5.37603E-05,-0.999997,0.0025161,4.14224E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.39,344.06,-55.03],[9.05153E-05,-0.999996,0.00296872,2.09293E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !3 giecie
+        sekwencja;
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.18,-54.35],[0.00200406,0.999972,-0.00190168,-0.00692869],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-122.37,344.19,-30],[0.00199649,0.999972,-0.00189728,-0.00691837],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.37,344.19,22.00],[0.00199649,0.999972,-0.00189728,-0.00691837],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.71,343.09,25.39],[5.09089E-05,-0.999997,0.00251344,3.84878E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.94,345.43,-53.45],[0.000110082,-0.999998,0.00215638,3.24116E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,4;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !4 giecie
+        sekwencja;
+        
+        MoveL [[-122.41,344.18,-28.19],[0.0020155,0.999975,-0.00191361,-0.00656211],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.39,344.18,-54.35],[0.00200406,0.999972,-0.00190168,-0.00692869],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,3;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-122.37,344.19,-30],[0.00199498,0.999972,-0.00189794,-0.00692587],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-122.37,344.19,59.67],[0.00199498,0.999972,-0.00189794,-0.00692587],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-176.73,343.13,66.89],[7.60914E-05,-0.999997,0.00252981,1.56636E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-177.34,345.00,-53.59],[0.000164473,-0.999998,0.00196468,7.10144E-06],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper FALSE
+        GripperOperating FALSE,3;
+        MoveL [[-177.35,343.08,-32.56],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !5giecie
+        sekwencja;
+    
+        MoveL [[-177.35,343.08,0],[9.06008E-05,-0.999997,0.00250364,4.58106E-05],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.07,343.02,0],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.06,342.94,-58.24],[0.00106045,0.999985,-0.00241137,-0.00484085],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-321.07,343.02,-30],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-321.07,343.02,0],[0.00103426,0.999955,-0.00244535,-0.00914632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-376.47,344.03,-0.07],[0.00103271,0.999955,-0.00213058,-0.00915027],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-376.45,344.28,-44.88],[0.00111233,0.999954,-0.00235213,-0.00919895],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-376.46,348.84,-23.93],[0.00106057,0.999955,-0.00215265,-0.00915117],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\InPos;
+        
+        !6 giecie
+        sekwencja;
+        MoveL [[-322.37,343.06,0],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-322.38,343.06,-49.47],[0.00093188,0.999953,-0.00209149,-0.00941032],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-322.37,343.06,-30],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-322.37,343.06,0],[0.000956823,0.999921,-0.00209885,-0.0123655],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.41,343.25,0],[0.000924113,0.999921,-0.00214071,-0.0123632],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.41,344.02,-45.11],[0.000941309,0.999922,-0.00158132,-0.0123869],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-377.40,349.93,-23.66],[0.000915529,0.999921,-0.0021397,-0.0123518],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !7 giecie
+        sekwencja;
+        MoveL [[-377.38,343.25,-47.91],[0.000974734,0.99992,-0.00212077,-0.012424],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! Gripper TRUE
+        GripperOperating TRUE,4;
+
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        
+        MoveL [[-377.38,343.24,-30],[0.000971532,0.99992,-0.00212395,-0.0124079],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-377.38,343.24,0],[0.000971532,0.99992,-0.00212395,-0.0124079],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-432.78,343.30,0],[0.00098831,0.999922,-0.000906058,-0.0124342],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-432.74,343.30,-51.98],[0.000956896,0.999919,-0.00275774,-0.0124188],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-432.84,351.23,-27.55],[0.00101282,0.999921,-0.000915606,-0.0124657],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! 8 giecie
+        sekwencja;
+        MoveL [[-371.81,343.14,-27.69],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.81,343.14,-48.81],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,3;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-371.78,343.14,-30],[0.00108696,0.99994,-0.000855093,-0.0108998],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.78,343.14,39.93],[0.00108696,0.99994,-0.000855093,-0.0108998],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,40],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-427.04,344.59,-52.18],[0.0018816,0.999938,-0.000554618,-0.010957],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! GRipper False
+        GripperOperating FALSE,3;
+        
+        MoveL [[-426.79,348.05,-28.08],[0.00110036,0.999939,-0.000813449,-0.0109244],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !9 giecie
+        sekwencja;
+        
+        MoveL [[-371.81,343.14,-27.69],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.81,343.14,-48.81],[0.00109257,0.999939,-0.000854667,-0.0109187],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,3;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-371.82,343.17,-30],[0.00109315,0.99994,-0.000866334,-0.0109058],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-371.82,343.17,69.37],[0.00109315,0.99994,-0.000866334,-0.0109058],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,70],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-426.80,343.09,-48.13],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        ! GRipper False
+        GripperOperating FALSE,3;
+        
+        MoveL [[-426.80,343.09,-28.13],[0.00108677,0.99994,-0.000821842,-0.0109098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! 10 giecie
+        sekwencja;
+        MoveL [[-521.29,349.66,-31.31],[0.00117901,0.999939,-0.000851856,-0.0109072],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-521.30,349.67,-46.79],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-521.30,349.67,-30],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-521.30,349.67,0],[0.00115658,0.99994,-0.000856326,-0.0108939],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-576.30,349.72,0],[0.00117788,0.999939,-0.000812051,-0.0109206],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-576.59,349.94,-43.41],[0.00113155,0.999939,-0.000840503,-0.0109268],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        !GRpper False
+        GripperOperating FALSE,4;
+
+        
+        MoveL [[-576.76,349.72,-23.84],[0.00117788,0.999939,-0.000812051,-0.0109206],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !11 giecie
+        sekwencja;
+        MoveL [[-572.77,349.63,-48.07],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !Gripper TRUE
+        GripperOperating TRUE,4;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-572.77,349.63,-30],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-572.77,349.63,0],[0.00118644,0.999939,-0.00078394,-0.0109858],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-627.77,349.58,0],[0.00113329,0.999939,-0.000760766,-0.0109875],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-629.10,351.63,-43.69],[0.00120716,0.999938,-0.000224053,-0.011097],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        !Gripper False
+        GripperOperating FALSE,4;
+        
+        MoveL [[-627.06,349.58,-24.88],[0.00113329,0.999939,-0.000760766,-0.0109875],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !12 giecie
+        sekwencja;
+        MoveL [[-570.80,349.52,-27.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,-47.73],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! gripper TRUE
+        GripperOperating TRUE,3;
+    
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        MoveL [[-570.80,349.52,-30],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.80,349.52,50],[0.00117021,0.999938,-0.000727249,-0.011076],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-570.79,349.51,-27.72],[0.00114548,0.999937,-0.000715685,-0.011098],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-624.22,349.40,-27.92],[0.00111081,0.999938,-0.000679664,-0.01106],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-626.19,349.61,-46.59],[0.00390199,0.999931,-0.000592638,-0.0110681],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        GrippersInPressBrake TRUE;
+        waittime 0.5;
+        
+        !gripper False
+        GripperOperating FALSE,3;
+        
+        MoveL [[-625.83,357.45,-25.15],[0.00115741,0.999938,-0.000657469,-0.0110278],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        !13giecie
+        sekwencja;
+        
+        MoveL [[-624.99,349.56,-47.10],[0.0011498,0.999957,-0.000704977,-0.00919144],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        ! gripper TRUE
+        GripperOperating TRUE,3;
+        
+        GrippersInPressBrake FALSE;
+        waittime 0.5;
+        
+        Setgo go_Function_1,0;
+        
+        MoveL [[-624.96,349.61,-28.57],[0.00110464,0.999958,-0.000720572,-0.00910317],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-614.05,349.58,-28.52],[0.00110374,0.999958,-0.000709379,-0.00911725],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v10, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-30.54,340.64,-26.17],[0.00116384,0.999957,-0.000722217,-0.00913929],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[-30.53,340.66,89.96],[0.00112931,0.999958,-0.000718984,-0.00910795],[0,1,-2,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        MoveL [[319.20,340.70,89.91],[0.00112123,0.999958,-0.000734405,-0.00909094],[0,1,-1,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v300, fine, Gripper\WObj:=Ermaksan1;
+        waitrob\inpos;
+        
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+    
+        Setgo go_Function_1,11;
+        MoveAbsJ jInFrontOfPressBrake20\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jInFrontOfPressBrake10\NoEOffs, v500, fine, Gripper;
+        
+        AccSet 50,20\FinePointRamp:=15;
+        MoveAbsJ jInFrontOfPressBrake30\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jWP2,v800,z100,Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        Setgo go_Function_1,0;
+        
+    ENDPROC
+    
+    PROC sekwencja()
+        IF di_PleaseOpenDoors=1 THEN
+            stop;
+        ENDIF
+        PulseDO\PLength:=0.5,do_StartErmaksan_1;
+        waittime 0.5;
+        waitdi di_ErmaksanReady_1,1;
+        
+         Setdo do_ErmaksanBDP_1,1;
+        Setdo do_ErmaksanMCP_1,1;
+        Setdo do_ErmaksanSCP_1,1;
+        
+        waittime 0.5;
+        
+        Setdo do_StartErmaksan_1,1;
+        waitdi di_ErmaksanSCP_1,1;
+        
+        Setdo do_ErmaksanSCP_1,0;
+        waitdi di_ErmaksanMCP_1,1;
+        
+        Setdo do_ErmaksanMCP_1,0;
+        waitdi di_ErmaksanBDP_1,1;
+        
+        Setdo do_ErmaksanBDP_1,0;
+        waitdi di_ErmaksanTDP_1,1;
+        
+        Setdo do_StartErmaksan_1,0;
+        
+        waittime 0.5;
+        
+    ENDPROC
+    
+      PROC Place()
+        VAR bool b_loop;
+        
+        AccSet 50,20\FinePointRamp:=15;
+        
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync2, do_Sync2=1 gdy rob2 jest w strefie pick lub conveyot
+        WaitDO do_Sync2,0;
+        ! wystaw na do_Sync1 1 aby rob 2 wiedzial ze rob1 jest w strefie conveyor
+        Setdo do_Sync1,1;
+        !obserwuj worldzone rob2 czy nie jest w strefie conveyor area
+        errorcheck 6;    
+        ! przygotowanie intSync - obserwowanie sygnalu do_conveyorarea_2
+        Idelete intSync;
+        CONNECT intSync WITH tSync;
+        ISignalDO\Single,do_WZconveyorarea_2,high,intSync;
+        IWatch intSync;
+       
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+        
+        Setgo go_Function_1,7;
+        MoveAbsJ jWP4, v500, z100, Gripper\WObj:=wobj0;
+        MoveL offs(pPlace,0,0,200), v500, z100, Gripper\WObj:=wobj0;
+        MoveL pPlace, v300, fine, Gripper\WObj:=wobj0;
+        waitrob\inpos;
+        PulseDO\PLength:=0.75,do_PleaseTurnOnVaccum;
+        GripperOperating FALSE,4;
+        Setgo go_Function_1,8;
+        MoveL offs(pPlace,0,0,200), v300, fine, Gripper\WObj:=wobj0;
+        
+        Setgo go_Function_1,11;
+        
+        AccSet 10,10\FinePointRamp:=15;
+        
+        MoveAbsJ jWP64\NoEOffs, v500, fine, Gripper;
+        MoveL [[1652.12,-1699.52,738.98],[0.0194227,0.00562041,-0.999788,0.00395718],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+        WaitRob\inpos;
+        waittime 0.5;
+        MoveL [[1657.29,-1698.26,876.05],[0.0195789,0.00558618,-0.999785,0.00385239],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper;
+        
+        !MoveAbsJ jWP44\NoEOffs, v500, fine, Gripper;
+        !MoveL [[2040.68,-1694.43,915.40],[0.0963308,-0.00590032,0.995327,-0.00314525],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+        !waitrob\inpos;
+        !waittime 0.5;
+        !MoveL [[2016.88,-1693.69,1037.11],[0.0963134,-0.00589315,0.995328,-0.00318869],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper;
+        
+        MoveL [[1609.41,-1700.99,847.36],[0.000222539,0.00568088,-0.999976,0.00385567],[-1,0,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, fine, Gripper;
+        MoveL [[1609.41,-1700.99,747.36],[0.000222539,0.00568088,-0.999976,0.00385567],[-1,0,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+        WaitRob\inpos;
+        waittime 0.5;
+        MoveL [[1609.41,-1700.99,847.36],[0.000222539,0.00568088,-0.999976,0.00385567],[-1,0,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper;
+        
+        AccSet 70,20\FinePointRamp:=15;
+        MoveAbsJ jWP4, v1000, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        
+        Setgo go_Function_1,0;
+        
+        
+    ENDPROC
+    
+    PROC Place2()
+        VAR bool b_loop;
+        AccSet 50,20\FinePointRamp:=15;
+        
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+        
+        ! Czekaj az drugi robot wystawi 0 na sygnale do_Sync2, do_Sync2=1 gdy rob2 jest w strefie pick lub conveyor
+        WaitDO do_Sync2,0;
+        ! wystaw na do_Sync1 1 aby rob 2 wiedzial ze rob1 jest w conveyor place
+        Setdo do_Sync1,1;
+        !obserwuj worldzone rob2 czy nie jest w strefie conveyor area
+        errorcheck 6;    
+        ! przygotowanie intSync - obserwowanie sygnalu do_WZconveyorarea_2
+        Idelete intSync;
+        CONNECT intSync WITH tSync;
+        ISignalDO\Single,do_WZconveyorArea_2,high,intSync;
+        IWatch intSync;
+        
+        Setgo go_Function_1,6;
+        waitdi di_TransporterReady,1;
+        Setgo go_Function_1,0;
+        
+        MoveAbsJ jWP4, v500, z100, Gripper\WObj:=wobj0;
+        MoveL [[1568.96,-1696.62,946.64],[0.00663301,-0.00563762,0.999955,-0.00374989],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v500, z100, Gripper;
+        MoveL [[1576.91,-1697.08,871.96],[0.00664578,-0.00564554,0.999955,-0.00370805],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+        MoveL pPlace10, v100, fine, Gripper;
+        waitrob\inpos;
+        PulseDO\PLength:=0.75,do_PleaseTurnOnVaccum;
+        GripperOperating FALSE,4;
+        
+        AccSet 10,10\FinePointRamp:=15;
+        MoveL offs(pPlace10,0,0,200), v50, fine, Gripper\WObj:=wobj0;
+        
+        Setgo go_Function_1,11;
+        
+        MoveAbsJ jWP64\NoEOffs, v500, fine, Gripper;
+        MoveL [[1652.12,-1699.52,738.98],[0.0194227,0.00562041,-0.999788,0.00395718],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+        WaitRob\inpos;
+        waittime 0.5;
+        MoveL [[1657.29,-1698.26,876.05],[0.0195789,0.00558618,-0.999785,0.00385239],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v50, fine, Gripper;
+    
+        AccSet 70,20\FinePointRamp:=15;
+        MoveAbsJ jWP54\NoEOffs, v500, fine, Gripper;
+        MoveAbsJ jWP4, v1000, z100, Gripper\WObj:=wobj0;
+        Waitrob\InPos;
+        Setgo go_Function_1,0;
+    ENDPROC
+    
+    
+    PROC errorCheck(num n_ErrorCheckNr)
+        VAR bool b_loop;
+        b_loop:=TRUE;
+        WHILE b_loop=TRUE DO
+            TEST n_ErrorCheckNr
+            CASE 1:
+                !sprawdzenie obecnosci detalu w chwytaku
+                IF (di_GripperSensor_1=1) THEN
+                    !set do_Error3;
+                    Stop;
+                ELSE
+                    b_loop:=FALSE;
+                ENDIF
+            CASE 2:
+                !Spawdzenie obecnosci detalu na stole pozycjunujacym
+                !IF di_PositioningTableSensor=0 THEN
+                    !set do_Error2;
+                !ELSE
+                    !b_loop:=FALSE;
+                !ENDIF
+            CASE 3:
+                !sprawdzenie poprawnosci otwarcia prasy
+                IF ( di_ErmaksanTDP_1=0) THEN
+                    set do_Error3;
+                ELSE
+                    b_loop:=FALSE;
+                ENDIF
+            CASE 4:
+                !prawdzenie czujnika cisnienia
+                IF (di_1RowPressure_1=0 AND di_2RowPressure_1=0 AND di_3RowPressure_1=0 AND di_4RowPressure_1=0 AND di_5RowPressure_1=0) THEN
+                    b_loop:=FALSE;
+                ELSE
+                 
+                    !set do_Error6;
+                    Stop;
+                ENDIF
+            CASE 5:
+                !Sprawdzenie stanu czujnika na transporterze
+                !IF di_TransporterSensor=1 THEN
+                 
+                    !set do_Error7;
+                !ELSE
+                    b_loop:=FALSE;
+                !ENDIF
+            CASE 6:  
+                 !jezeli roboty sa w tej samejs trefie zatrzymaj
+                 ! Jezeli sa w tej samej strefie operator musi wyjechac robotami do home w trybie manual
+                IF(do_WZPickArea_1=1 AND do_WZPickArea_2=1) OR (do_WZconveyorarea=1 AND do_WZconveyorarea_2=1) OR (do_WZconveyorarea=1 AND do_WZPIckArea_2=1) OR (do_WZconveyorarea_2=1 AND do_WZPIckArea_1=1)   THEN
+                    set do_Error1;
+                    stop;
+                ELSE
+                    b_loop:=FALSE;
+                ENDIF
+            CASE 7:
+                !Spawdzenie obecnosci detalu w prasie
+                IF di_DetailInPRessBrake_1=1 THEN
+                    !set do_Error2;
+                ELSE
+                    b_loop:=FALSE;
+                ENDIF
+
+            DEFAULT:
+            ENDTEST
+        ENDWHILE
+            
+    ENDPROC
+    
+    PROC GripperOperating (bool b_OnOff, num row)
+         IF b_OnOff AND row=4 THEN
+            IF di_PleaseOpenDoors=1 THEN
+                stop;
+            ENDIF
+            Setdo do_1RowVaccumOn_1,1;
+            Setdo do_2RowVaccumOn_1,1;
+            Setdo do_3RowVaccumOn_1,1;
+            Setdo do_4RowVaccumOn_1,1;
+            waittime 0.5;
+            !TrapsMaintain FALSE,0;
+            !TrapsMaintain TRUE,2;
+            !TrapsMaintain TRUE,3;
+            !TrapsMaintain TRUE,4;
+            !TrapsMaintain TRUE,5;
+            
+            
+            !traps
+        ELSEIF b_Onoff=FALSE AND row=4 THEN
+            !TrapsMaintain FALSE,0;
+            Setdo do_1RowVaccumOn_1,0;
+            Setdo do_2RowVaccumOn_1,0;
+            Setdo do_3RowVaccumOn_1,0;
+            Setdo do_4RowVaccumOn_1,0;
+            waittime 0.5;
+    
+        ENDIF
+        
+         IF b_OnOff AND row=3 THEN
+            IF di_PleaseOpenDoors=1 THEN
+                stop;
+            ENDIF
+            Setdo do_1RowVaccumOn_1,1;
+            Setdo do_2RowVaccumOn_1,1;
+            Setdo do_3RowVaccumOn_1,1;
+            waittime 0.5;
+            !TrapsMaintain FALSE,0;
+            !TrapsMaintain TRUE,2;
+            !TrapsMaintain TRUE,3;
+            !TrapsMaintain TRUE,4;
+            
+            
+            !traps
+        ELSEIF b_Onoff=FALSE AND row=3 THEN
+            !TrapsMaintain FALSE,0;
+            Setdo do_1RowVaccumOn_1,0;
+            Setdo do_2RowVaccumOn_1,0;
+            Setdo do_3RowVaccumOn_1,0;
+            waittime 0.5;
+    
+        ENDIF
+        
+    ENDPROC
+    
+     PROC GrippersInPressBrake (bool b_OnOff)
+         IF b_OnOff THEN
+             Setdo do_GrippersInPressBrakeOpenF_1,0;
+            Setdo do_GrippersInPressBrakeOpenB_1,0;
+            Setdo do_GrippersInPressBrakeCloseF_1,1;
+            Setdo do_GrippersInPressBrakeCloseB_1,1;
+            WaitDI di_GrippersInPressBrakeCLosedF_1, 1;
+            WaitDI di_GrippersInPressBrakeClosedB_1, 1;
+            
+            
+            
+            
+        ELSEIF b_Onoff=FALSE THEN
+            Setdo do_GrippersInPressBrakeCloseF_1,0;
+            Setdo do_GrippersInPressBrakeCloseB_1,0;
+            Setdo do_GrippersInPressBrakeOpenF_1,1;
+            Setdo do_GrippersInPressBrakeOpenB_1,1;
+            WaitDI di_GrippersInPressBrakeOpenedB_1, 1;
+            WaitDI di_GrippersInPressBrakeOpenedF_1, 1;
+            
+            
+    
+        ENDIF
+     
+    ENDPROC
+    
+     PROC PrepareErmaksan()
+         IF di_ErmaksanReady_1=0 THEN
+                PulseDO\PLength:=0.5,do_StartErmaksan_1;
+                waittime 0.5;
+            ENDIF
+            waitdi di_ErmaksanReady_1,1;
+            waittime 0.5;
+            Setdo do_StartErmaksan_1,1;
+            waitdi di_ErmaksanBDP_1,1;
+            waitdi di_ErmaksanTDP_1,1;
+            Setdo do_StartErmaksan_1,0;
+            waitdi di_ErmaksanReady_1,0;     
+    ENDPROC
+    
+    
+    
+    PROC TrapsMaintain(bool b_OnOff,num nTrap)
+        IF (b_OnOff=TRUE) THEN
+            TEST nTrap
+            CASE 1:
+                CONNECT detDrop_1 WITH DetailDropped;
+                ISignalDI di_GripperSensor_1,0,detDrop_1;
+            CASE 2:
+                CONNECT no_pressure_1 WITH NoPressure1;
+                ISignalDI di_1RowPressure_1,0,no_pressure_1;
+            CASE 3:
+                CONNECT no_pressure_2 WITH NoPressure2;
+                ISignalDI di_2RowPressure_1,0,no_pressure_2;   
+            CASE 4:
+                CONNECT no_pressure_3 WITH NoPressure3;
+                ISignalDI di_3RowPressure_1,0,no_pressure_3;
+            CASE 5:
+                CONNECT no_pressure_4 WITH NoPressure4;
+                ISignalDI di_4RowPRessure_1,0,no_pressure_4;
+            DEFAULT:
+            ENDTEST
+            IEnable;
+        ELSE
+            TEST nTrap
+            CASE 0:
+                IDelete detDrop_1;
+                IDelete no_pressure_1;
+                IDelete no_pressure_2;
+                IDelete no_pressure_3;
+                IDelete no_pressure_4;
+                IDelete no_pressure_5;
+            DEFAULT:
+            ENDTEST
+        ENDIF
+    ENDPROC
+    
+    TRAP NoPressure1
+        Stop;
+    ENDTRAP
+    
+    TRAP NoPressure2
+        Stop;
+    ENDTRAP
+    
+    TRAP NoPressure3
+        Stop;
+    ENDTRAP
+    
+    TRAP NoPressure4
+        Stop;
+    ENDTRAP
+    
+    TRAP NoPressure5
+        Stop;
+    ENDTRAP
+    
+    TRAP DetailDropped
+        Stop;
+    ENDTRAP
+    
+    TRAP tSync
+        Setdo do_Error1,1;
+        stop;
+    ENDTRAP
+    
+    
+    
+    PROC test1area()
+        !start
+        VAR num offsx;
+        !pozycja - give space
+        MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+        AccSet 70,20\FinePointRamp:=15;
+        Setdo do_Sync1,0;
+        Setdo do_Hold1,0;
+        Setdo do_Bend,0;
+        
+            
+            waittime 3;
+            Waitdo do_Hold2,0;
+            WaitDO do_Sync2,0;
+            setdo do_Sync1,1;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-50.1202,-8.18051,27.3206,47.6007,48.8935,-76.1135],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            AccSet 50,20\FinePointRamp:=15;
+            MoveL [[1724.89,-762.79,759.82],[0.00830641,-0.005348,0.999951,0.000430657],[-1,0,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            WaitRob\inpos;
+            setdo do_GripperVaccumOn_1,1;
+            waittime 2;
+            setdo do_Hold2,1;
+            MoveL [[1720.56,-763.09,1004.10],[0.00814392,-0.00520313,0.999953,0.000385248],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            AccSet 70,20\FinePointRamp:=15;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            !MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[5.77515,-36.9746,12.3862,-4.68843,69.791,6.68305],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            waitrob\inpos;
+            Setdo do_Sync1,0;
+            
+            waittime 0.5;
+            Setdo do_Bend,1;
+             AccSet 50,20\FinePointRamp:=15;
+            offsx:=0;
+            !bending new
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            FOR i FROM 0 TO 3 DO
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                offsx:=offsx+30;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waittime 2;
+                !bend
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+            ENDFOR
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            offsx:=offsx+60;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            !bend
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            FOR i FROM 0 TO 2 DO
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                offsx:=offsx+30;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                waittime 2;
+                !bend
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+            ENDFOR
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            offsx:=offsx+120;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            !bend
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            FOR i FROM 0 TO 4 DO
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                offsx:=offsx+30;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                waittime 2;
+                !bend
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+            ENDFOR
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            offsx:=offsx+60;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            !bend
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            FOR i FROM 0 TO 5 DO
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                offsx:=offsx+30;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+                waittime 2;
+                !bend
+                MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+                waitrob\inpos;
+            ENDFOR
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            offsx:=offsx+60;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            !bend
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            offsx:=offsx+30;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            MoveL [[1500+offsx,30.51,1500+50],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            waittime 2;
+            !bend
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+             offsx:=0;
+            MoveL [[1500+offsx,30.51,1500],[0.000286547,0.00794406,0.99996,0.00403485],[0,-1,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            waitrob\inpos;
+            Setdo do_Bend,0;
+            
+            waittime 0.5;
+            waitdo do_SYnc2,0;
+            Setdo do_SYnc1,1;
+            AccSet 70,20\FinePointRamp:=15;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-50.1202,-8.18051,27.3206,47.6007,48.8935,-76.1135],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            AccSet 50,20\FinePointRamp:=15;
+            MoveL [[1724.89,-762.79,759.82],[0.00830641,-0.005348,0.999951,0.000430657],[-1,0,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            WaitRob\inpos;
+            setdo do_GripperVaccumOn_1,0;
+            waittime 2;
+            Setdo do_Hold2,0;
+            MoveL [[1720.56,-763.09,1004.10],[0.00814392,-0.00520313,0.999953,0.000385248],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            AccSet 70,20\FinePointRamp:=15;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            !MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            !MoveAbsJ [[5.77515,-36.9746,12.3862,-4.68843,69.791,6.68305],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            waitrob\inpos;
+            Setdo do_SYnc1,0;
+            
+            waittime 0.5;
+            WaitDO do_Sync2,0;
+            Setdo do_Sync1,1;
+            MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-30.3118,-43.7594,44.0205,-42.5947,64.6983,70.1783],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-72.374,-41.7924,43.7569,-40.5028,64.9751,72.9818],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-83.1337,-15.6832,32.2651,-46.1228,82.8995,107.264],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            AccSet 50,20\FinePointRamp:=15;
+            MoveL [[-959.46,-890.42,704.16],[0.0064858,0.999939,-0.000601333,-0.00894293],[-1,-1,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            WaitRob\InPos;
+            Setdo do_GripperVaccumOn_1,1;
+            waittime 2;
+            Setdo do_Hold1,1;
+            MoveL [[-969.70,-902.60,751.22],[0.00654855,0.999939,-0.000632021,-0.00891852],[-1,-1,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            AccSet 70,20\FinePointRamp:=15;
+            MoveAbsJ [[-83.1337,-15.6832,32.2651,-46.1228,82.8995,107.264],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-72.374,-41.7924,43.7569,-40.5028,64.9751,72.9818],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-30.3118,-43.7594,44.0205,-42.5947,64.6983,70.1783],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            !pozycja - give space
+            MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            waitrob\inpos;
+            Setdo do_Sync1,0;
+            
+            waittime 0.5;
+            WaitDO do_Sync2,0;
+            Setdo do_Sync1,1;
+            MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-30.3118,-43.7594,44.0205,-42.5947,64.6983,70.1783],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-72.374,-41.7924,43.7569,-40.5028,64.9751,72.9818],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-83.1337,-15.6832,32.2651,-46.1228,82.8995,107.264],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            AccSet 50,20\FinePointRamp:=15;
+            MoveL [[-1016.59,-967.57,743.86],[0.00650428,0.999939,-0.000586399,-0.00889435],[-1,-1,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            WaitRob\InPos;
+            Setdo do_GripperVaccumOn_1,0;
+            waittime 2;
+            Setdo do_Hold1,0;
+            MoveL [[-969.70,-902.60,751.22],[0.00654855,0.999939,-0.000632021,-0.00891852],[-1,-1,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]], v100, fine, Gripper;
+            AccSet 70,20\FinePointRamp:=15;
+            MoveAbsJ [[-83.1337,-15.6832,32.2651,-46.1228,82.8995,107.264],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-72.374,-41.7924,43.7569,-40.5028,64.9751,72.9818],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-30.3118,-43.7594,44.0205,-42.5947,64.6983,70.1783],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            MoveAbsJ [[-31.2878,-49.7097,46.302,5.8275,-17.1769,-6.796],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            !pozycja - give space
+            MoveAbsJ [[0.90082,-20.9875,24.1754,0.566144,-31.6469,-2.60694],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]\NoEOffs, v300, z50, Gripper;
+            waitrob\inpos;
+            Setdo do_PositioningTableDown,0;
+            Setdo do_PositioningTableUp,0;
+            waittime 1;
+            Setdo do_PositioningTableDown,1;
+            waittime 5;
+            Setdo do_PositioningTableDown,0;
+            waittime 0.5;
+            Setdo do_PositioningTableUp,1;
+            waittime 5;
+            Setdo do_Sync1,0;
+            stop;
+            
+        
+      
+         
+    ENDPROC
+ENDMODULE
